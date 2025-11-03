@@ -1,7 +1,5 @@
-const fs = require("bare-fs");
-const path = require("bare-path");
-const process = require("bare-process");
-const { spawnSync } = require("bare-subprocess");
+require('bare-node-runtime/global')
+const { spawnSync } = require('bare-subprocess') // This is not part of bare-node-runtime yet.
 
 const packageDir = __dirname;
 const testsDir = path.join(packageDir, "tests");
