@@ -7,7 +7,10 @@
     "format:fix": "prettier . --write",
     "format": "prettier . --check",
     "get-wallet-details": "bare get-wallet-details.js",
-    "create-lightning-invoice": "bare create-lightning-invoice.js 1000"
+    "get-static-deposit-address": "bare get-static-deposit-address.js",
+    "auto-claim-static-deposit": "bare auto-claim-static-deposit.js",
+    "create-lightning-invoice": "bare create-lightning-invoice.js",
+    "transfer": "bare transfer.js"
   },
   "dependencies": {
     "@buildonspark/bare": "0.0.24",
@@ -24,6 +27,7 @@
     "bare-https": "^2.0.0",
     "bare-module": "^5.0.1",
     "bare-node-diagnostics-channel": "^0.0.1",
+    "bare-node-runtime": "^1.1.4",
     "bare-os": "^3.6.1",
     "bare-path": "^3.0.0",
     "bare-performance": "^1.0.0",
