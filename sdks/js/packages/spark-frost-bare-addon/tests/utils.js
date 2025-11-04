@@ -54,7 +54,7 @@ function test(name, fn) {
 }
 
 const imports = {
-  with: { imports: 'bare-node-runtime/imports' }
+  with: { imports: "bare-node-runtime/imports" },
 };
 
 module.exports = { test, imports };
