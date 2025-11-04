@@ -1,8 +1,5 @@
 // Example Bare script using Spark SDK and Frost addon
-import {
-  SparkWallet,
-  BareSparkSigner,
-} from "@buildonspark/bare" with { imports: "bare-node-runtime/imports" };
+import { SparkWallet, BareSparkSigner } from "@buildonspark/bare";
 import process from "bare-process";
 import walletConfig from "./wallet-config.js";
 

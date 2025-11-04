@@ -1818,26 +1818,6 @@ __metadata:
     "@buildonspark/bare": "npm:0.0.24"
     "@buildonspark/spark-sdk": "npm:0.4.3"
     bare: "npm:^1.23.3"
-    bare-assert: "npm:^1.0.2"
-    bare-async-hooks: "npm:^0.0.0"
-    bare-buffer: "npm:^3.3.0"
-    bare-crypto: "npm:^1.9.2"
-    bare-encoding: "npm:^1.0.0"
-    bare-fetch: "npm:^2.4.1"
-    bare-fs: "npm:^4.1.6"
-    bare-http1: "npm:^4.0.4"
-    bare-https: "npm:^2.0.0"
-    bare-module: "npm:^5.0.1"
-    bare-node-diagnostics-channel: "npm:^0.0.1"
-    bare-node-runtime: "npm:^1.1.4"
-    bare-os: "npm:^3.6.1"
-    bare-path: "npm:^3.0.0"
-    bare-performance: "npm:^1.0.0"
-    bare-process: "npm:^4.2.1"
-    bare-url: "npm:^2.2.1"
-    bare-utils: "npm:^1.4.0"
-    bare-worker: "npm:^3.0.0"
-    bare-ws: "npm:^2.0.3"
     prettier: "npm:^3.6.2"
   languageName: unknown
   linkType: soft
@@ -8533,7 +8513,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-assert@npm:^1.0.2, bare-assert@npm:^1.1.0":
+"bare-assert@npm:^1.1.0":
   version: 1.1.0
   resolution: "bare-assert@npm:1.1.0"
   dependencies:
@@ -8549,7 +8529,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-buffer@npm:^3.3.0, bare-buffer@npm:^3.3.1":
+"bare-buffer@npm:^3.3.1":
   version: 3.4.1
   resolution: "bare-buffer@npm:3.4.1"
   checksum: 10/ae0f9b0620fc47842217bc674c0351ba3c7d93cc28607b46f1d62522bb125e961248902a4226ff7699025e51fcc22878c16629252674b512b3ac1126583ad5ae
@@ -8773,24 +8753,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-fs@npm:^4.1.6, bare-fs@npm:^4.4.4":
-  version: 4.4.11
-  resolution: "bare-fs@npm:4.4.11"
-  dependencies:
-    bare-events: "npm:^2.5.4"
-    bare-path: "npm:^3.0.0"
-    bare-stream: "npm:^2.6.4"
-    bare-url: "npm:^2.2.2"
-    fast-fifo: "npm:^1.3.2"
-  peerDependencies:
-    bare-buffer: "*"
-  peerDependenciesMeta:
-    bare-buffer:
-      optional: true
-  checksum: 10/4dee84a29e04900a911ab2cc9ba5427fc438e4ba4674d7d02e854639c50c65053972ef74c499daab34d9f65259b4e51b7d7fe99f6cb6928061963181539211dd
-  languageName: node
-  linkType: hard
-
 "bare-fs@npm:^4.2.3":
   version: 4.5.0
   resolution: "bare-fs@npm:4.5.0"
@@ -8806,6 +8768,24 @@ __metadata:
     bare-buffer:
       optional: true
   checksum: 10/df15c6bf51a405460c4363e3efd886d31c7c6592b4ce4eb0d79ff433c695eabf0f930dd436676e02ed8bb4b141d27fbceb4c2d0c7ae4607fdb96a083506e0c65
+  languageName: node
+  linkType: hard
+
+"bare-fs@npm:^4.4.4":
+  version: 4.4.11
+  resolution: "bare-fs@npm:4.4.11"
+  dependencies:
+    bare-events: "npm:^2.5.4"
+    bare-path: "npm:^3.0.0"
+    bare-stream: "npm:^2.6.4"
+    bare-url: "npm:^2.2.2"
+    fast-fifo: "npm:^1.3.2"
+  peerDependencies:
+    bare-buffer: "*"
+  peerDependenciesMeta:
+    bare-buffer:
+      optional: true
+  checksum: 10/4dee84a29e04900a911ab2cc9ba5427fc438e4ba4674d7d02e854639c50c65053972ef74c499daab34d9f65259b4e51b7d7fe99f6cb6928061963181539211dd
   languageName: node
   linkType: hard
 
@@ -8962,24 +8942,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-module@npm:^5.0.0, bare-module@npm:^5.0.1":
-  version: 5.0.3
-  resolution: "bare-module@npm:5.0.3"
-  dependencies:
-    bare-bundle: "npm:^1.3.0"
-    bare-module-lexer: "npm:^1.0.0"
-    bare-module-resolve: "npm:^1.8.0"
-    bare-path: "npm:^3.0.0"
-    bare-url: "npm:^2.0.1"
-  peerDependencies:
-    bare-buffer: "*"
-  peerDependenciesMeta:
-    bare-buffer:
-      optional: true
-  checksum: 10/ac9c851d586e0d807080409fce7e03f21635992e0be73d053f49c06d09adff0bb5d2bcef19d527f40ad94bd517c247cc1dacecd220ee2d1e096f372cde4f35ca
-  languageName: node
-  linkType: hard
-
 "bare-module@npm:^6.0.1, bare-module@npm:^6.1.2":
   version: 6.1.2
   resolution: "bare-module@npm:6.1.2"
@@ -9019,13 +8981,6 @@ __metadata:
     bare-stream: "npm:^2.0.0"
     bare-tcp: "npm:^2.0.0"
   checksum: 10/d382b09cbfeea4ddea68273f06348b3f31a7430c60342e8a38ca1a43d297c12962c9b1eab4bbea7d92f147a3b9196ba08688295b9578f247009b8b6e105b1fdb
-  languageName: node
-  linkType: hard
-
-"bare-node-diagnostics-channel@npm:^0.0.1":
-  version: 0.0.1
-  resolution: "bare-node-diagnostics-channel@npm:0.0.1"
-  checksum: 10/579556df955ba9aafd8aa562a60264bd72e42f3712fb833814a3f3d63c897af6db554c29b11e4cf95a69190ec9a6836f6e7e81ab544757ab19d262fa3bde0e12
   languageName: node
   linkType: hard
 
@@ -9074,7 +9029,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-os@npm:^3.0.1, bare-os@npm:^3.2.0, bare-os@npm:^3.3.1, bare-os@npm:^3.5.0, bare-os@npm:^3.6.1, bare-os@npm:^3.6.2":
+"bare-os@npm:^3.0.1, bare-os@npm:^3.2.0, bare-os@npm:^3.3.1, bare-os@npm:^3.5.0, bare-os@npm:^3.6.2":
   version: 3.6.2
   resolution: "bare-os@npm:3.6.2"
   checksum: 10/11e127cdce86444be2039a28f1e25a5635f3e4ada09aeb35b33d524766b51c5f71db3dc1e8d8d88018ea5255e9f6663a55174960ca45f002132d7808b9b34e29
@@ -9090,7 +9045,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-performance@npm:^1.0.0, bare-performance@npm:^1.1.0":
+"bare-performance@npm:^1.1.0":
   version: 1.2.1
   resolution: "bare-performance@npm:1.2.1"
   checksum: 10/6d6e5becbc54cb302cdf04956d3ab70343d5788407adc0a39c34a5ae2bfede4c532034ae52e11ce56c3faf1e4cca19e1d8d7709260e456b35a5fcc70af54d772
@@ -9520,7 +9475,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-url@npm:^2.0.1, bare-url@npm:^2.1.0, bare-url@npm:^2.2.1, bare-url@npm:^2.2.2":
+"bare-url@npm:^2.0.1, bare-url@npm:^2.1.0, bare-url@npm:^2.2.2":
   version: 2.3.0
   resolution: "bare-url@npm:2.3.0"
   dependencies:
@@ -9529,7 +9484,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"bare-utils@npm:^1.4.0, bare-utils@npm:^1.5.1":
+"bare-utils@npm:^1.5.1":
   version: 1.5.1
   resolution: "bare-utils@npm:1.5.1"
   dependencies:
@@ -9555,19 +9510,6 @@ __metadata:
   dependencies:
     bare-realm: "npm:^1.0.5"
   checksum: 10/85cc1bd78b5b2b342bfae491a38e25e9b1cc6864ab7d226e20b8061b1adc467b1f5b8610abb69050811bb969258e994f1fcb2d2970b14f301a0c843a2ca4f77e
-  languageName: node
-  linkType: hard
-
-"bare-worker@npm:^3.0.0":
-  version: 3.2.0
-  resolution: "bare-worker@npm:3.2.0"
-  dependencies:
-    bare-channel: "npm:^5.1.5"
-    bare-events: "npm:^2.2.1"
-    bare-module: "npm:^5.0.0"
-    bare-os: "npm:^3.0.1"
-    bare-url: "npm:^2.0.1"
-  checksum: 10/651a56347ef83502c4c374ba156fd6dea296b7f6b438802004282fc0e319c9e156845a9d1436aa6bdff3093c8739cc3a166b156cbd442ffef5c82ea00dfb0050
   languageName: node
   linkType: hard
 
@@ -9601,27 +9543,6 @@ __metadata:
     bare-url:
       optional: true
   checksum: 10/99ca6d4f232c08d9c4107022158eb22c6324f34bc8946e63c44d8c696399e75d3c995831fcf6fc2522cc084c88867a0aeeca09ade7141d80974ebde946babdf9
-  languageName: node
-  linkType: hard
-
-"bare-ws@npm:^2.0.3":
-  version: 2.0.3
-  resolution: "bare-ws@npm:2.0.3"
-  dependencies:
-    bare-crypto: "npm:^1.2.0"
-    bare-events: "npm:^2.3.1"
-    bare-http1: "npm:^4.0.0"
-    bare-https: "npm:^2.0.0"
-    bare-stream: "npm:^2.1.2"
-  peerDependencies:
-    bare-buffer: "*"
-    bare-url: "*"
-  peerDependenciesMeta:
-    bare-buffer:
-      optional: true
-    bare-url:
-      optional: true
-  checksum: 10/daebbcb3a8e4acaf32c21930e5d17e3598b0b810c605ceca5f671757612d197dfb150bb1cf9484e2bc20d24db3aefbd9a626425fa60e06d87f9948f56b009952
   languageName: node
   linkType: hard
 

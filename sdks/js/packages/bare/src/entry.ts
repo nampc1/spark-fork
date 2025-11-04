@@ -1,4 +1,4 @@
-import 'bare-node-runtime/global';
+import "bare-node-runtime/global";
 import Module from "module";
 
 /* Avoid a console.error that comes from an import of Node.js require-in-the-middle module, see LIG-8098 */

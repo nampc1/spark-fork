@@ -2,5 +2,6 @@
    initialize a new wallet. Note seed phrase is required here for some of the test scripts */
 
 export default {
-  mnemonic: undefined,
+  mnemonic:
+    "defy only anchor dish kid decorate twist great soon organ moon impulse",
 };
