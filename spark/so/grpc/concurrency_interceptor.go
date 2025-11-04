@@ -125,6 +125,9 @@ func init() {
 // Creates a unary server interceptor that enforces a concurrency limit on incoming gRPC requests
 func ConcurrencyInterceptor(guard ResourceLimiter, clientInfoProvider *GRPCClientInfoProvider, knobsService knobs.Knobs) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx, span := tracer.Start(ctx, "ConcurrencyInterceptor")
+		defer span.End()
+
 		// Check if the request should be excluded from concurrency limiting by pubkey or IP.
 		bypassConcurrency := false
 		bypassState := "enforced"
@@ -152,15 +155,15 @@ func ConcurrencyInterceptor(guard ResourceLimiter, clientInfoProvider *GRPCClien
 
 		attrs := append(grpcutil.ParseFullMethod(info.FullMethod), attribute.String("concurrency_limit_action", bypassState))
 		if !bypassConcurrency {
-			// Only requests not excluded from concurrency limiting should count against the limit.
-			otelAttrs := metric.WithAttributes(attrs...)
-			methodConcurrencyGauge.Add(ctx, 1, otelAttrs)
-			defer methodConcurrencyGauge.Add(ctx, -1, otelAttrs)
-
 			if err := guard.TryAcquireMethod(info.FullMethod); err != nil {
 				return nil, err
 			}
 			defer guard.ReleaseMethod(info.FullMethod)
+
+			// Only requests not excluded from concurrency limiting should count against the limit.
+			otelAttrs := metric.WithAttributes(attrs...)
+			methodConcurrencyGauge.Add(ctx, 1, otelAttrs)
+			defer methodConcurrencyGauge.Add(ctx, -1, otelAttrs)
 		}
 
 		return handler(ctx, req)

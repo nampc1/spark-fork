@@ -22,6 +22,9 @@ const signingCommitmentsKey signingCommitmentsKeyType = "ReservedSigningCommitme
 
 func SigningCommitmentInterceptor(operatorMap map[string]*so.SigningOperator, knobs knobs.Knobs) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx, span := tracer.Start(ctx, "SigningCommitmentInterceptor")
+		defer span.End()
+
 		if knobs == nil || knobs.GetValue("spark.so.enable_prefetch_frost_round_1", 0) == 0 {
 			return handler(ctx, req)
 		}
@@ -33,15 +36,16 @@ func SigningCommitmentInterceptor(operatorMap map[string]*so.SigningOperator, kn
 		if signingCommitmentsCount > 0 {
 			logger := logging.GetLoggerFromContext(ctx)
 			logger.Sugar().Infof("Counted %d signing commitments necessary for request", signingCommitmentsCount)
-			dbTx, err := ent.GetDbFromContext(ctx)
+			dbTx, err := ent.GetTxFromContext(ctx)
 			if err != nil {
 				return nil, err
 			}
+			dbClient := dbTx.Client()
 
 			commitmentsMap := make(map[uint][]*ent.SigningCommitment)
 			for _, operator := range operatorMap {
 				idx := uint(operator.ID)
-				commitments, err := ent.ReserveSigningCommitments(ctx, dbTx, uint32(signingCommitmentsCount), idx)
+				commitments, err := ent.ReserveSigningCommitments(ctx, dbClient, uint32(signingCommitmentsCount), idx)
 				if err != nil {
 					logger.Error("Failed to get unused signing commitments", zap.Error(err))
 					if rollbackErr := dbTx.Rollback(); rollbackErr != nil {

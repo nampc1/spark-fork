@@ -159,15 +159,15 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 	))
 	defer span.End()
 
-	reqOwnerIDPubKey, err := keys.ParsePublicKey(req.OwnerIdentityPublicKey)
+	reqOwnerIdentityPubKey, err := keys.ParsePublicKey(req.GetOwnerIdentityPublicKey())
 	if err != nil {
-		return nil, fmt.Errorf("invalid identity public key: %w", err)
+		return nil, sparkerrors.InvalidArgumentMalformedKey(fmt.Errorf("failed to parse owner identity public key: %w", err))
 	}
-	if err := authz.EnforceSessionIdentityPublicKeyMatches(ctx, h.config, reqOwnerIDPubKey); err != nil {
+	if err := authz.EnforceSessionIdentityPublicKeyMatches(ctx, h.config, reqOwnerIdentityPubKey); err != nil {
 		return nil, err
 	}
 
-	leafTweakMap, err := h.ValidateTransferPackage(ctx, req.TransferId, req.TransferPackage, reqOwnerIDPubKey)
+	leafTweakMap, err := h.ValidateTransferPackage(ctx, req.TransferId, req.TransferPackage, reqOwnerIdentityPubKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate transfer package for transfer %s: %w", req.TransferId, err)
 	}
@@ -191,9 +191,9 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 	leafDirectRefundMap := h.loadDirectLeafRefundMap(req)
 	leafDirectFromCpfpRefundMap := h.loadDirectFromCpfpLeafRefundMap(req)
 
-	reqReceiverIDPubKey, err := keys.ParsePublicKey(req.ReceiverIdentityPublicKey)
+	receiverIdentityPubKey, err := keys.ParsePublicKey(req.GetReceiverIdentityPublicKey())
 	if err != nil {
-		return nil, fmt.Errorf("invalid receiver identity public key: %w", err)
+		return nil, sparkerrors.InvalidArgumentMalformedKey(fmt.Errorf("failed to parse receiver identity public key: %w", err))
 	}
 
 	if len(req.SparkInvoice) > 0 {
@@ -205,16 +205,17 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 			}
 			leafIDsToSend[i] = leafID
 		}
-		err = validateSatsSparkInvoice(ctx, req.SparkInvoice, req.ReceiverIdentityPublicKey, req.OwnerIdentityPublicKey, leafIDsToSend, true)
+		err = validateSatsSparkInvoice(ctx, req.SparkInvoice, receiverIdentityPubKey, reqOwnerIdentityPubKey, leafIDsToSend, true)
 		if err != nil {
 			return nil, fmt.Errorf("failed to validate sats spark invoice: %s for transfer id: %s. error: %w", req.SparkInvoice, req.TransferId, err)
 		}
 	}
 
-	db, err := ent.GetDbFromContext(ctx)
+	entTx, err := ent.GetTxFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get database transaction: %w", err)
 	}
+	db := entTx.Client()
 	transferUUID, err := uuid.Parse(req.TransferId)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse transfer_id as a uuid %s: %w", req.TransferId, err)
@@ -223,7 +224,7 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 	if err != nil {
 		return nil, fmt.Errorf("unable to create pending send transfer: %w", err)
 	}
-	err = db.Commit()
+	err = entTx.Commit()
 	if err != nil {
 		return nil, fmt.Errorf("unable to commit database transaction: %w", err)
 	}
@@ -247,8 +248,8 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 		req.TransferId,
 		transferType,
 		req.ExpiryTime.AsTime(),
-		reqOwnerIDPubKey,
-		reqReceiverIDPubKey,
+		reqOwnerIdentityPubKey,
+		receiverIdentityPubKey,
 		leafCpfpRefundMap,
 		leafDirectRefundMap,
 		leafDirectFromCpfpRefundMap,
@@ -260,23 +261,24 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 	)
 	if err != nil {
 		originalErr := err
-		db, err := ent.GetDbFromContext(ctx)
+		entTx, err := ent.GetTxFromContext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get database transaction: %w while creating transfer: %w", err, originalErr)
 		}
-		err = db.Rollback()
+		err = entTx.Rollback()
 		if err != nil {
 			return nil, fmt.Errorf("unable to rollback database transaction: %w while creating transfer: %w", err, originalErr)
 		}
-		db, err = ent.GetDbFromContext(ctx)
+		entTx, err = ent.GetTxFromContext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get database transaction: %w while creating transfer: %w", err, originalErr)
 		}
-		_, err = db.PendingSendTransfer.Update().Where(pendingsendtransfer.TransferID(transferUUID)).SetStatus(st.PendingSendTransferStatusFinished).Save(ctx)
+		dbClient := entTx.Client()
+		_, err = dbClient.PendingSendTransfer.Update().Where(pendingsendtransfer.TransferID(transferUUID)).SetStatus(st.PendingSendTransferStatusFinished).Save(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to update pending send transfer: %w while creating transfer: %w", err, originalErr)
 		}
-		err = db.Commit()
+		err = entTx.Commit()
 		if err != nil {
 			return nil, fmt.Errorf("unable to commit database transaction: %w while creating transfer: %w", err, originalErr)
 		}
@@ -358,20 +360,21 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 		syncErr := err
 		logger.With(zap.Error(syncErr)).Sugar().Errorf("Failed to sync transfer init for transfer %s", req.TransferId)
 
-		db, err := ent.GetDbFromContext(ctx)
+		entTx, err := ent.GetTxFromContext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get database transaction: %w", err)
 		}
-		err = db.Rollback()
+		err = entTx.Rollback()
 		if err != nil {
 			return nil, fmt.Errorf("unable to rollback database transaction: %w", err)
 		}
 
-		db, err = ent.GetDbFromContext(ctx)
+		entTx, err = ent.GetTxFromContext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get database transaction: %w", err)
 		}
-		_, err = db.PendingSendTransfer.Update().Where(pendingsendtransfer.TransferID(transfer.ID)).SetStatus(st.PendingSendTransferStatusFinished).Save(ctx)
+		dbClient := entTx.Client()
+		_, err = dbClient.PendingSendTransfer.Update().Where(pendingsendtransfer.TransferID(transfer.ID)).SetStatus(st.PendingSendTransferStatusFinished).Save(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to update pending send transfer: %w", err)
 		}
@@ -379,7 +382,7 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 		if cancelErr != nil {
 			logger.With(zap.Error(cancelErr)).Sugar().Errorf("Failed to create cancel transfer gossip message for transfer %s", req.TransferId)
 		}
-		err = db.Commit()
+		err = entTx.Commit()
 		if err != nil {
 			return nil, fmt.Errorf("unable to rollback database transaction: %w", err)
 		}
@@ -390,11 +393,11 @@ func (h *TransferHandler) startTransferInternal(ctx context.Context, req *pb.Sta
 	// After this point, the transfer send is considered successful.
 
 	if req.TransferPackage != nil {
-		db, err := ent.GetDbFromContext(ctx)
+		entTx, err := ent.GetTxFromContext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get db before sync transfer init: %w", err)
 		}
-		err = db.Commit()
+		err = entTx.Commit()
 		if err != nil {
 			return nil, fmt.Errorf("unable to commit db before sync transfer init: %w", err)
 		}
@@ -1413,12 +1416,12 @@ func (h *TransferHandler) FinalizeTransferWithTransferPackage(ctx context.Contex
 	logger.Sugar().Infof("Preparing to send key tweaks to other SOs for transfer %s", req.TransferId)
 	err = h.syncDeliverSenderKeyTweak(ctx, req, transfer.Type)
 	if err != nil {
-		dbTx, dbErr := ent.GetDbFromContext(ctx)
+		entTx, dbErr := ent.GetTxFromContext(ctx)
 		if dbErr != nil {
 			logger.Error("failed to get db tx", zap.Error(dbErr))
 		}
-		if dbTx != nil {
-			dbErr = dbTx.Rollback()
+		if entTx != nil {
+			dbErr = entTx.Rollback()
 			if dbErr != nil {
 				logger.Error("failed to rollback db tx", zap.Error(dbErr))
 			}
@@ -1442,12 +1445,12 @@ func (h *TransferHandler) FinalizeTransferWithTransferPackage(ctx context.Contex
 			enriched := sparkerrors.WrapErrorWithMessage(err, errorMsg)
 			return nil, sparkerrors.WrapErrorWithReasonPrefix(enriched, sparkerrors.ErrorReasonPrefixFailedWithExternalCoordinator)
 		}
-		dbTx, dbErr = ent.GetDbFromContext(ctx)
+		entTx, dbErr = ent.GetTxFromContext(ctx)
 		if dbErr != nil {
 			logger.Error("failed to get db tx", zap.Error(dbErr))
 		}
-		if dbTx != nil {
-			dbErr = dbTx.Commit()
+		if entTx != nil {
+			dbErr = entTx.Commit()
 			if dbErr != nil {
 				logger.Error("failed to commit db tx", zap.Error(dbErr))
 			}
@@ -1456,10 +1459,11 @@ func (h *TransferHandler) FinalizeTransferWithTransferPackage(ctx context.Contex
 	}
 	logger.Sugar().Infof("Successfully delivered key tweaks to other SOs for transfer %s", req.TransferId)
 
-	db, err := ent.GetDbFromContext(ctx)
+	entTx, err := ent.GetTxFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
 	}
+	db := entTx.Client()
 	shouldTweakKey := true
 	switch transfer.Type {
 	case st.TransferTypePreimageSwap:
@@ -1494,7 +1498,7 @@ func (h *TransferHandler) FinalizeTransferWithTransferPackage(ctx context.Contex
 	}
 
 	if shouldTweakKey {
-		if err = db.Commit(); err != nil {
+		if err = entTx.Commit(); err != nil {
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 		err = h.settleSenderKeyTweaks(ctx, req.TransferId, pbinternal.SettleKeyTweakAction_COMMIT)
@@ -1729,6 +1733,10 @@ func (h *TransferHandler) queryTransfers(ctx context.Context, filter *pb.Transfe
 	ctx, span := tracer.Start(ctx, "TransferHandler.queryTransfers")
 	defer span.End()
 
+	if filter.GetParticipant() == nil && len(filter.TransferIds) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "must specify either filter.Participant or filter.TransferIds")
+	}
+
 	db, err := ent.GetDbFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
@@ -1916,7 +1924,7 @@ func (h *TransferHandler) QueryAllTransfers(ctx context.Context, filter *pb.Tran
 
 const CoopExitConfirmationThreshold = 6
 
-func checkCoopExitTxBroadcasted(ctx context.Context, db *ent.Tx, transfer *ent.Transfer) error {
+func checkCoopExitTxBroadcasted(ctx context.Context, db *ent.Client, transfer *ent.Transfer) error {
 	ctx, span := tracer.Start(ctx, "TransferHandler.checkCoopExitTxBroadcasted")
 	defer span.End()
 
@@ -2555,11 +2563,11 @@ func (h *TransferHandler) InitiateSettleReceiverKeyTweak(ctx context.Context, re
 		return fmt.Errorf("unable to update transfer status %s: %w", transfer.ID.String(), err)
 	}
 
-	db, err := ent.GetDbFromContext(ctx)
+	entTx, err := ent.GetTxFromContext(ctx)
 	if err != nil {
 		return fmt.Errorf("unable to get db: %w", err)
 	}
-	err = db.Commit()
+	err = entTx.Commit()
 	if err != nil {
 		return fmt.Errorf("unable to commit db: %w", err)
 	}
@@ -2649,11 +2657,11 @@ func (h *TransferHandler) SettleReceiverKeyTweak(ctx context.Context, req *pbint
 		return fmt.Errorf("invalid action %s", req.Action)
 	}
 
-	db, err := ent.GetDbFromContext(ctx)
+	entTx, err := ent.GetTxFromContext(ctx)
 	if err != nil {
 		return fmt.Errorf("unable to get db: %w", err)
 	}
-	if err := db.Commit(); err != nil {
+	if err := entTx.Commit(); err != nil {
 		return fmt.Errorf("unable to commit db: %w", err)
 	}
 	return nil

@@ -416,7 +416,7 @@ func createAndLockSparkInvoice(ctx context.Context, sparkInvoice string) (uuid.U
 	return storedInvoice.ID, nil
 }
 
-func loadLeavesWithLock(ctx context.Context, db *ent.Tx, leafRefundMap map[string][]byte) ([]*ent.TreeNode, error) {
+func loadLeavesWithLock(ctx context.Context, db *ent.Client, leafRefundMap map[string][]byte) ([]*ent.TreeNode, error) {
 	leafUUIDs := make([]uuid.UUID, 0, len(leafRefundMap))
 	for leafID := range leafRefundMap {
 		leafUUID, err := uuid.Parse(leafID)
@@ -585,7 +585,7 @@ func (h *BaseTransferHandler) LeafAvailableToTransfer(ctx context.Context, leaf 
 
 func createTransferLeaves(
 	ctx context.Context,
-	db *ent.Tx,
+	db *ent.Client,
 	transfer *ent.Transfer,
 	leaves []*ent.TreeNode,
 	cpfpLeafRefundMap map[string][]byte,
@@ -627,7 +627,7 @@ func createTransferLeaves(
 	return nil
 }
 
-func setTotalTransferValue(ctx context.Context, db *ent.Tx, transfer *ent.Transfer, leaves []*ent.TreeNode) error {
+func setTotalTransferValue(ctx context.Context, db *ent.Client, transfer *ent.Transfer, leaves []*ent.TreeNode) error {
 	totalAmount := getTotalTransferValue(leaves)
 	_, err := db.Transfer.UpdateOne(transfer).SetTotalValue(totalAmount).Save(ctx)
 	if err != nil {
@@ -644,7 +644,7 @@ func getTotalTransferValue(leaves []*ent.TreeNode) uint64 {
 	return totalAmount
 }
 
-func lockLeaves(ctx context.Context, db *ent.Tx, leaves []*ent.TreeNode) ([]*ent.TreeNode, error) {
+func lockLeaves(ctx context.Context, db *ent.Client, leaves []*ent.TreeNode) ([]*ent.TreeNode, error) {
 	ids := make([]uuid.UUID, len(leaves))
 	for i, leaf := range leaves {
 		ids[i] = leaf.ID
@@ -691,8 +691,6 @@ func (h *BaseTransferHandler) CancelTransfer(ctx context.Context, req *pbspark.C
 	}
 
 	if transfer.Status != st.TransferStatusSenderInitiated &&
-		transfer.Status != st.TransferStatusSenderKeyTweakPending &&
-		transfer.Status != st.TransferStatusSenderInitiatedCoordinator &&
 		transfer.Status != st.TransferStatusReturned {
 		return nil, fmt.Errorf("transfer %s is expected to be at status TransferStatusSenderInitiated, TransferStatusSenderKeyTweakPending or TransferStatusSenderInitiatedCoordinator or TransferStatusReturned but %s found", transfer.ID.String(), transfer.Status)
 	}

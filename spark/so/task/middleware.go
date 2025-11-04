@@ -25,7 +25,7 @@ var (
 	errTaskPanic    = fmt.Errorf("task panicked")
 )
 
-type TaskMiddleware func(context.Context, *so.Config, *BaseTaskSpec, knobs.Knobs) error //nolint:revive
+type TaskMiddleware func(context.Context, *so.Config, *BaseTaskSpec, knobs.Knobs) error
 
 func LogMiddleware() TaskMiddleware {
 	return func(ctx context.Context, config *so.Config, task *BaseTaskSpec, knobsService knobs.Knobs) error {
@@ -112,7 +112,7 @@ func DatabaseMiddleware(factory db.SessionFactory, beginTxTimeout *time.Duration
 			opts = append(opts, db.WithTxBeginTimeout(*beginTxTimeout))
 		}
 
-		session := factory.NewSession(
+		var session ent.Session = factory.NewSession(
 			sessionCtx,
 			opts...,
 		)

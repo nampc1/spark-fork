@@ -21,6 +21,14 @@ func (p *NeverTxProvider) GetOrBeginTx(ctx context.Context) (*ent.Tx, error) {
 	return nil, ctx.Err()
 }
 
+func (p *NeverTxProvider) GetClient(ctx context.Context) (*ent.Client, error) {
+	tx, err := p.GetOrBeginTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return tx.Client(), nil
+}
+
 // A TxProvider that simulates a slow transaction provider that waits for an external trigger before
 // returning a transaction.
 type SlowTxProvider struct {
@@ -35,6 +43,14 @@ func (p *SlowTxProvider) GetOrBeginTx(ctx context.Context) (*ent.Tx, error) {
 	case <-p.trigger:
 		return p.tx, nil
 	}
+}
+
+func (p *SlowTxProvider) GetClient(ctx context.Context) (*ent.Client, error) {
+	tx, err := p.GetOrBeginTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return tx.Client(), nil
 }
 
 func TestSession_GetOrBeginTxReturnsSameTx(t *testing.T) {
@@ -319,4 +335,41 @@ func TestTxProviderWithTimeout_NoTimeout(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timed out waiting for the transaction to be returned.")
 	}
+}
+
+func TestReadOnlySession_GetClient(t *testing.T) {
+	dbClient := NewTestSQLiteClient(t)
+	defer dbClient.Close()
+
+	session := NewReadOnlySession(t.Context(), dbClient)
+
+	// GetClient should work fine
+	client, err := session.GetClient(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	require.Equal(t, dbClient, client)
+}
+
+func TestReadOnlySession_GetOrBeginTxErrors(t *testing.T) {
+	dbClient := NewTestSQLiteClient(t)
+	defer dbClient.Close()
+
+	session := NewReadOnlySession(t.Context(), dbClient)
+
+	// GetOrBeginTx should return an error
+	tx, err := session.GetOrBeginTx(t.Context())
+	require.Error(t, err)
+	require.Nil(t, tx)
+	require.Contains(t, err.Error(), "read-only session does not support")
+}
+
+func TestReadOnlySession_GetTxIfExists(t *testing.T) {
+	dbClient := NewTestSQLiteClient(t)
+	defer dbClient.Close()
+
+	session := NewReadOnlySession(t.Context(), dbClient)
+
+	// GetTxIfExists should always return nil
+	tx := session.GetTxIfExists()
+	require.Nil(t, tx)
 }
