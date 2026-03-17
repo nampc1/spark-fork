@@ -44,9 +44,10 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 
 	parentNode, err := db.TreeNode.Query().
 		Where(enttreenode.ID(parentNodeID)).
+		ForUpdate().
 		WithSigningKeyshare().
 		WithChildren(func(q *ent.TreeNodeQuery) {
-			q.Order(enttreenode.ByCreateTime())
+			q.Order(enttreenode.ByID())
 		}).
 		Only(ctx)
 	if err != nil {
@@ -98,7 +99,13 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 		return nil, fmt.Errorf("failed to walk right chain: %w", err)
 	}
 
-	// Acquire left SO keyshare
+	// Acquire left SO keyshare.
+	// When LeftSigningKeyshareId is provided, it comes from the coordinator SO which
+	// already validated and assigned these IDs. Peer SOs receive the coordinator's
+	// keyshare IDs, which may have coordinator_index=0 (for derived keyshares via
+	// CalculateAndStoreLastKey). A coordinator_index check is therefore not applicable
+	// here — the SSP is responsible for calling the coordinator first, then passing
+	// the returned IDs to each peer SO.
 	var leftSparkOperatorKeyshare *ent.SigningKeyshare
 	if len(req.LeftSigningKeyshareId) > 0 {
 		leftKeyshareID, err := uuid.Parse(req.LeftSigningKeyshareId)
@@ -108,10 +115,6 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 		leftSparkOperatorKeyshare, err = db.SigningKeyshare.Get(ctx, leftKeyshareID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get left keyshare: %w", err)
-		}
-		if leftSparkOperatorKeyshare.CoordinatorIndex != h.config.Index {
-			return nil, fmt.Errorf("left keyshare coordinator index %d does not match this operator's index %d",
-				leftSparkOperatorKeyshare.CoordinatorIndex, h.config.Index)
 		}
 	} else {
 		leftSparkOperatorKeyshare, err = grabOneUnusedKeyshare(ctx, db, h.config)
