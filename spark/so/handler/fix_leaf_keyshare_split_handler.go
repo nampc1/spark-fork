@@ -14,8 +14,6 @@ import (
 	"github.com/lightsparkdev/spark/so"
 	"github.com/lightsparkdev/spark/so/ent"
 	enttreenode "github.com/lightsparkdev/spark/so/ent/treenode"
-
-	entsql "entgo.io/ent/dialect/sql"
 )
 
 const maxChainDepth = 100
@@ -32,6 +30,27 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 	ctx context.Context,
 	req *pbssp.FixLeafKeyshareSplitRequest,
 ) (*pbssp.FixLeafKeyshareSplitResponse, error) {
+	// Acquire left SO keyshare first, before any ForUpdate locks.
+	// GetUnusedSigningKeyshares commits the current tx, so it must run before
+	// other DB operations that rely on the transaction.
+	// When LeftSigningKeyshareId is provided, it comes from the coordinator SO which
+	// already validated and assigned these IDs. Peer SOs receive the coordinator's
+	// keyshare IDs, which may have coordinator_index=0 (for derived keyshares via
+	// CalculateAndStoreLastKey). A coordinator_index check is therefore not applicable
+	// here — the SSP is responsible for calling the coordinator first, then passing
+	// the returned IDs to each peer SO.
+	var leftSparkOperatorKeyshare *ent.SigningKeyshare
+	if len(req.LeftSigningKeyshareId) == 0 {
+		leftSparkOperatorKeyshares, err := ent.GetUnusedSigningKeyshares(ctx, h.config, 1)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get unused keyshares: %w", err)
+		}
+		if len(leftSparkOperatorKeyshares) == 0 {
+			return nil, fmt.Errorf("no unused keyshares available")
+		}
+		leftSparkOperatorKeyshare = leftSparkOperatorKeyshares[0]
+	}
+
 	db, err := ent.GetDbFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get db from context: %w", err)
@@ -99,14 +118,6 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 		return nil, fmt.Errorf("failed to walk right chain: %w", err)
 	}
 
-	// Acquire left SO keyshare.
-	// When LeftSigningKeyshareId is provided, it comes from the coordinator SO which
-	// already validated and assigned these IDs. Peer SOs receive the coordinator's
-	// keyshare IDs, which may have coordinator_index=0 (for derived keyshares via
-	// CalculateAndStoreLastKey). A coordinator_index check is therefore not applicable
-	// here — the SSP is responsible for calling the coordinator first, then passing
-	// the returned IDs to each peer SO.
-	var leftSparkOperatorKeyshare *ent.SigningKeyshare
 	if len(req.LeftSigningKeyshareId) > 0 {
 		leftKeyshareID, err := uuid.Parse(req.LeftSigningKeyshareId)
 		if err != nil {
@@ -115,11 +126,6 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 		leftSparkOperatorKeyshare, err = db.SigningKeyshare.Get(ctx, leftKeyshareID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get left keyshare: %w", err)
-		}
-	} else {
-		leftSparkOperatorKeyshare, err = grabOneUnusedKeyshare(ctx, db, h.config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get unused keyshare: %w", err)
 		}
 	}
 
@@ -160,42 +166,6 @@ func (h *FixLeafKeyshareSplitHandler) FixLeafKeyshareSplit(
 		LeftSigningKeyshareId:  leftSparkOperatorKeyshare.ID.String(),
 		RightSigningKeyshareId: rightSparkOperatorKeyshare.ID.String(),
 	}, nil
-}
-
-// grabOneUnusedKeyshare selects one available keyshare and marks it IN_USE
-// within the current transaction (does not commit).
-func grabOneUnusedKeyshare(ctx context.Context, db *ent.Client, config *so.Config) (*ent.SigningKeyshare, error) {
-	var keyshares []*ent.SigningKeyshare
-
-	//nolint:forbidigo // Raw SQL to select+update in one step within the current transaction
-	rows, err := db.QueryContext(ctx, `
-		WITH selected_ids AS (
-			SELECT id FROM signing_keyshares
-			WHERE status = 'AVAILABLE' AND coordinator_index = $1
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE signing_keyshares
-		SET status = 'IN_USE', update_time = NOW()
-		FROM selected_ids
-		WHERE signing_keyshares.id = selected_ids.id
-		RETURNING signing_keyshares.*
-	`, []any{config.Index}...)
-	if err != nil {
-		return nil, err
-	}
-	ent.MarkTxDirty(ctx)
-	defer func() { _ = rows.Close() }()
-
-	if err := entsql.ScanSlice(rows, &keyshares); err != nil {
-		return nil, err
-	}
-
-	if len(keyshares) == 0 {
-		return nil, fmt.Errorf("no available signing keyshares")
-	}
-
-	return keyshares[0], nil
 }
 
 // walkChain walks a chain of single-child nodes starting from startID using
