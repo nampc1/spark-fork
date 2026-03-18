@@ -373,8 +373,8 @@ func (h *ReSignSubtreeHandler) buildIntermediateSigningJobs(
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse intermediate node_tx: %w", err)
 	}
-	if tx.TxIn[0].Sequence != spark.ZeroSequence {
-		return nil, fmt.Errorf("intermediate node_tx sequence must be ZeroSequence, got %d", tx.TxIn[0].Sequence)
+	if tx.TxIn[0].Sequence != spark.ZeroSequence && tx.TxIn[0].Sequence != 0 {
+		return nil, fmt.Errorf("intermediate node_tx sequence must be ZeroSequence or 0, got %d", tx.TxIn[0].Sequence)
 	}
 
 	job, err := helper.NewSigningJobWithPregeneratedNonce(userJob, keyshare, node.VerifyingPubkey, tx, prevOutput)
