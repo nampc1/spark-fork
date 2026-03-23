@@ -20,6 +20,96 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestSettleSenderKeyTweak_Commit_EmptyKeyTweak verifies that committing
+// a transfer via SettleSenderKeyTweak fails when a TransferLeaf has no
+// key_tweak stored, rather than allowing proto.Unmarshal on empty bytes.
+//
+// This tests defense-in-depth: the empty key_tweak state shouldn't be
+// reachable through normal operation, but if it is (due to a bug or race),
+// the system should fail fast with a clear error.
+func TestSettleSenderKeyTweak_Commit_EmptyKeyTweak(t *testing.T) {
+	ctx, dbCtx := db.ConnectToTestPostgres(t)
+	cfg := sparktesting.TestConfig(t)
+	rng := rand.NewChaCha8([32]byte{44})
+
+	senderPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	receiverPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	client := dbCtx.Client
+
+	keysharePrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	publicSharePrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	signingKeyshare, err := client.SigningKeyshare.Create().
+		SetStatus(st.KeyshareStatusAvailable).
+		SetSecretShare(keysharePrivKey).
+		SetPublicShares(map[string]keys.Public{"test": publicSharePrivKey.Public()}).
+		SetPublicKey(keysharePrivKey.Public()).
+		SetMinSigners(2).
+		SetCoordinatorIndex(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	tree, err := client.Tree.Create().
+		SetStatus(st.TreeStatusAvailable).
+		SetNetwork(btcnetwork.Regtest).
+		SetOwnerIdentityPubkey(senderPrivKey.Public()).
+		SetBaseTxid(st.NewRandomTxIDForTesting(t)).
+		SetVout(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	verifyingPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	ownerSigningPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	leaf, err := client.TreeNode.Create().
+		SetStatus(st.TreeNodeStatusAvailable).
+		SetTree(tree).
+		SetNetwork(tree.Network).
+		SetSigningKeyshare(signingKeyshare).
+		SetValue(1000).
+		SetVerifyingPubkey(verifyingPrivKey.Public()).
+		SetOwnerIdentityPubkey(senderPrivKey.Public()).
+		SetOwnerSigningPubkey(ownerSigningPrivKey.Public()).
+		SetRawTx(createTestTxBytes(t, 3000)).
+		SetRawRefundTx(createTestTxBytes(t, 3100)).
+		SetVout(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create transfer in SenderKeyTweakPending status — the state that
+	// commitSenderKeyTweaks expects to find.
+	transfer, err := client.Transfer.Create().
+		SetNetwork(btcnetwork.Regtest).
+		SetStatus(st.TransferStatusSenderKeyTweakPending).
+		SetType(st.TransferTypeTransfer).
+		SetSenderIdentityPubkey(senderPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverPrivKey.Public()).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create TransferLeaf with NO key_tweak set (simulates the inconsistent
+	// state that this defense-in-depth check guards against).
+	_, err = client.TransferLeaf.Create().
+		SetTransfer(transfer).
+		SetLeaf(leaf).
+		SetPreviousRefundTx(createTestTxBytes(t, 4000)).
+		SetIntermediateRefundTx(createTestTxBytes(t, 4001)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Call through the public gRPC handler entry point.
+	handler := NewInternalTransferHandler(cfg)
+	err = handler.SettleSenderKeyTweak(ctx, &pbinternal.SettleSenderKeyTweakRequest{
+		TransferId: transfer.ID.String(),
+		Action:     pbinternal.SettleKeyTweakAction_COMMIT,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transfer leaf has no key tweak stored")
+	assert.Contains(t, err.Error(), leaf.ID.String())
+}
+
 func TestDeliverSenderKeyTweak_MissingKeyTweakForLeaf(t *testing.T) {
 	ctx, dbCtx := db.ConnectToTestPostgres(t)
 	rng := rand.NewChaCha8([32]byte{99})
@@ -99,19 +189,22 @@ func TestDeliverSenderKeyTweak_MissingKeyTweakForLeaf(t *testing.T) {
 	}
 
 	// Build a transfer package with key tweaks for ONLY the first leaf (not the second).
-	keyTweakPackage, userSignature := createMockKeyTweakPackage(t, cfg, rng, leaves[0].ID, ownerIdentityPrivKey, transferID)
+	// Uses buildKeyTweakPackageForLeaves + signTransferPackage so the signature covers
+	// the actual LeavesToSend payload (not an empty slice).
+	keyTweakPackage := buildKeyTweakPackageForLeaves(t, cfg, rng, []uuid.UUID{leaves[0].ID})
+	pkg := &sparkProto.TransferPackage{
+		LeavesToSend: []*sparkProto.UserSignedTxSigningJob{
+			{LeafId: leaves[0].ID.String(), RawTx: leaves[0].RawRefundTx},
+			{LeafId: leaves[1].ID.String(), RawTx: leaves[1].RawRefundTx},
+		},
+		KeyTweakPackage: keyTweakPackage,
+	}
+	signTransferPackage(t, pkg, transferID, ownerIdentityPrivKey)
 
 	req := &pbinternal.DeliverSenderKeyTweakRequest{
 		TransferId:              transferID.String(),
 		SenderIdentityPublicKey: senderIdentityPrivKey.Public().Serialize(),
-		TransferPackage: &sparkProto.TransferPackage{
-			LeavesToSend: []*sparkProto.UserSignedTxSigningJob{
-				{LeafId: leaves[0].ID.String(), RawTx: leaves[0].RawRefundTx},
-				{LeafId: leaves[1].ID.String(), RawTx: leaves[1].RawRefundTx},
-			},
-			KeyTweakPackage: keyTweakPackage,
-			UserSignature:   userSignature,
-		},
+		TransferPackage:         pkg,
 	}
 
 	handler := NewInternalTransferHandler(cfg)
@@ -119,8 +212,7 @@ func TestDeliverSenderKeyTweak_MissingKeyTweakForLeaf(t *testing.T) {
 
 	// Should fail because leaf[1] has no key tweak in the encrypted package.
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "key tweak not found for leaf")
-	assert.Contains(t, err.Error(), leaves[1].ID.String())
+	assert.Contains(t, err.Error(), "key tweak count mismatch")
 
 	// Verify transfer status was NOT updated to SenderKeyTweakPending.
 	updatedTransfer, err := dbCtx.Client.Transfer.Get(ctx, transferID)
