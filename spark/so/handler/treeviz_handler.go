@@ -257,17 +257,26 @@ func (h *TreeVizHandler) GetTreeTransfers(
 	}
 
 	maxTransfers := clampTreeVizTransfers(req.GetMaxTransfers())
+	transferLeafPredicates := []predicate.TransferLeaf{
+		enttransferleaf.HasLeafWith(enttreenode.HasTreeWith(enttree.IDEQ(treeID))),
+	}
+	if afterIDStr := req.GetAfterId(); afterIDStr != "" {
+		afterID, err := uuid.Parse(afterIDStr)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid after_id %q", afterIDStr)
+		}
+		transferLeafPredicates = append(transferLeafPredicates, enttransferleaf.IDGT(afterID))
+	}
 	transferLeafs, err := db.TransferLeaf.Query().
-		Where(enttransferleaf.HasLeafWith(enttreenode.HasTreeWith(enttree.IDEQ(treeID)))).
+		Where(transferLeafPredicates...).
 		WithLeaf().
 		WithTransfer(func(q *ent.TransferQuery) {
-			q.Order(ent.Desc(enttransfer.FieldUpdateTime)).
-				WithPaymentIntent().
+			q.WithPaymentIntent().
 				WithSparkInvoice().
 				WithCounterSwapTransfer().
 				WithPrimarySwapTransfer()
 		}).
-		Order(ent.Desc(enttransfer.FieldUpdateTime)).
+		Order(ent.Asc(enttransferleaf.FieldID)).
 		Limit(int(maxTransfers) + 1).
 		All(ctx)
 	if err != nil {
@@ -633,9 +642,9 @@ func marshalTreeVizNode(
 	treeIDStr string,
 	childCountByNode map[uuid.UUID]int,
 ) (*pb.TreeVizNode, error) {
-	parentNodeID := ""
+	var parentNodeID *string
 	if node.Edges.Parent != nil {
-		parentNodeID = node.Edges.Parent.ID.String()
+		parentNodeID = proto.String(node.Edges.Parent.ID.String())
 	}
 
 	networkProto, err := node.Network.MarshalProto()
