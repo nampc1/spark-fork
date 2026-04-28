@@ -70,20 +70,17 @@ func (f *stuckFixture) newPubkey() keys.Public {
 // transferOpts describes a fixture transfer. `transferState`, `sender`, and
 // `receiver` are required. `receiverState` defaults to INITIATED.
 // `createTime` defaults to 2h before the fixture's baseNow (safely inside
-// the 1-hour `before` cutoff that GetStuckTransfers enforces).
-// `receiverCreateTime` overrides the transfer_receivers.create_time for the
-// primary receiver row when non-zero; otherwise edges inherit `createTime`.
-// This simulates historical MIMO divergence where participant timestamps
-// drifted from transfers.create_time.
+// the 1-hour `before` cutoff that GetStuckTransfers enforces). The primary
+// receiver row inherits `createTime` per the cross-participant create_time
+// invariant.
 type transferOpts struct {
-	network            btcnetwork.Network
-	transferState      st.TransferStatus
-	sender             keys.Public
-	receiver           keys.Public
-	receiverState      st.TransferReceiverStatus
-	extraReceivers     []extraReceiver
-	createTime         time.Time
-	receiverCreateTime time.Time
+	network        btcnetwork.Network
+	transferState  st.TransferStatus
+	sender         keys.Public
+	receiver       keys.Public
+	receiverState  st.TransferReceiverStatus
+	extraReceivers []extraReceiver
+	createTime     time.Time
 }
 
 type extraReceiver struct {
@@ -130,15 +127,11 @@ func (f *stuckFixture) makeTransfer(opts transferOpts) *ent.Transfer {
 		Save(f.ctx)
 	require.NoError(f.t, err)
 
-	receiverCreateTime := opts.receiverCreateTime
-	if receiverCreateTime.IsZero() {
-		receiverCreateTime = createTime
-	}
 	_, err = f.client.TransferReceiver.Create().
 		SetTransferID(transfer.ID).
 		SetIdentityPubkey(opts.receiver).
 		SetStatus(receiverState).
-		SetCreateTime(receiverCreateTime).
+		SetCreateTime(createTime).
 		Save(f.ctx)
 	require.NoError(f.t, err)
 
@@ -575,54 +568,301 @@ func TestGetStuckTransfers_MIMO_TieBreaker(t *testing.T) {
 		"transfer_id DESC tiebreaker must return the higher UUID first")
 }
 
-// TestGetStuckTransfers_MIMO_DivergentCreateTimes exercises the correctness
-// guarantee that step-1 ID ordering matches step-2 Ent load ordering even
-// when transfer_receivers.create_time diverges from transfers.create_time.
-// Historical MIMO data predating the write-path invariant (PR #6248) has
-// this divergence; the receiver arm must order/paginate by
-// transfers.create_time so the result set is stable regardless.
-//
-// Setup: three stuck receivers with transfers.create_time in order A > B > C
-// (newest first) but transfer_receivers.create_time deliberately *reversed*
-// (C_edge > B_edge > A_edge). If the query ordered by r.create_time, the
-// returned order would be C, B, A — wrong. Ordering by t.create_time gives
-// the correct A, B, C.
-func TestGetStuckTransfers_MIMO_DivergentCreateTimes(t *testing.T) {
-	f := newStuckFixture(t)
-	user := f.newPubkey()
+// -----------------------------------------------------------------------------
+// No-pubkey (operator-wide) MIMO path
+// -----------------------------------------------------------------------------
 
+// getAllStuckTransferIDs invokes the handler without a user pubkey, matching
+// the operator-facing "find every stuck transfer" query.
+func (f *stuckFixture) getAllStuckTransferIDs(network pb.Network, limit, offset int64) []uuid.UUID {
+	f.t.Helper()
+	req := &pbssp.GetStuckTransfersRequest{
+		Network: network,
+		Limit:   limit,
+		Offset:  offset,
+	}
+	resp, err := f.handler.GetStuckTransfers(f.ctx, req)
+	require.NoError(f.t, err)
+	ids := make([]uuid.UUID, 0, len(resp.Transfers))
+	for _, stp := range resp.Transfers {
+		id, err := uuid.Parse(stp.Transfer.Id)
+		require.NoError(f.t, err)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func TestGetStuckTransfers_MIMO_NoPubkey_Empty(t *testing.T) {
+	f := newStuckFixture(t)
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Empty(t, ids)
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_AllUsers confirms the no-pubkey path
+// sweeps across multiple users: one sender-stuck, one receiver-stuck, and a
+// completed transfer that must be excluded.
+func TestGetStuckTransfers_MIMO_NoPubkey_AllUsers(t *testing.T) {
+	f := newStuckFixture(t)
+	userA := f.newPubkey()
+	userB := f.newPubkey()
+
+	senderStuck := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusSenderInitiated,
+		sender:        userA,
+		receiver:      f.newPubkey(),
+	})
+	receiverStuck := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      userB,
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+	})
+	// Completed — must not appear.
+	_ = f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusCompleted,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusCompleted,
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.ElementsMatch(t, []uuid.UUID{senderStuck.ID, receiverStuck.ID}, ids)
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_MultiReceiver_Dedup is the regression
+// test for the no-pubkey receiver arm: a multi-receiver transfer with two
+// stuck receivers must return the transfer ID exactly once. Without SELECT
+// DISTINCT, the INNER JOIN would emit one row per stuck receiver.
+func TestGetStuckTransfers_MIMO_NoPubkey_MultiReceiver_Dedup(t *testing.T) {
+	f := newStuckFixture(t)
+
+	t1 := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		extraReceivers: []extraReceiver{
+			{pubkey: f.newPubkey(), status: st.TransferReceiverStatusKeyTweakLocked},
+			{pubkey: f.newPubkey(), status: st.TransferReceiverStatusRefundSigned},
+		},
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Equal(t, []uuid.UUID{t1.ID}, ids,
+		"multi-receiver transfer with multiple stuck receivers must appear exactly once")
+}
+
+func TestGetStuckTransfers_MIMO_NoPubkey_NetworkFilter(t *testing.T) {
+	f := newStuckFixture(t)
+
+	regtest := f.makeTransfer(transferOpts{
+		network:       btcnetwork.Regtest,
+		transferState: st.TransferStatusSenderInitiated,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+	})
+	_ = f.makeTransfer(transferOpts{
+		network:       btcnetwork.Mainnet,
+		transferState: st.TransferStatusSenderInitiated,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+	})
+
+	regtestIDs := f.getAllStuckTransferIDs(pb.Network_REGTEST, 50, 0)
+	assert.Equal(t, []uuid.UUID{regtest.ID}, regtestIDs)
+
+	allIDs := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Len(t, allIDs, 2)
+}
+
+func TestGetStuckTransfers_MIMO_NoPubkey_Pagination(t *testing.T) {
+	f := newStuckFixture(t)
+
+	// Three stuck transfers, timestamps descending by ID.
 	newest := f.makeTransfer(transferOpts{
-		transferState:      st.TransferStatusReceiverKeyTweaked,
-		sender:             f.newPubkey(),
-		receiver:           user,
-		receiverState:      st.TransferReceiverStatusKeyTweaked,
-		createTime:         f.baseNow.Add(-70 * time.Minute), // newest by t.create_time
-		receiverCreateTime: f.baseNow.Add(-3 * time.Hour),    // oldest by r.create_time
+		transferState: st.TransferStatusSenderInitiated,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		createTime:    f.baseNow.Add(-2 * time.Hour),
 	})
 	middle := f.makeTransfer(transferOpts{
-		transferState:      st.TransferStatusReceiverKeyTweaked,
-		sender:             f.newPubkey(),
-		receiver:           user,
-		receiverState:      st.TransferReceiverStatusKeyTweaked,
-		createTime:         f.baseNow.Add(-2 * time.Hour),
-		receiverCreateTime: f.baseNow.Add(-2 * time.Hour),
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-3 * time.Hour),
 	})
 	oldest := f.makeTransfer(transferOpts{
-		transferState:      st.TransferStatusReceiverKeyTweaked,
-		sender:             f.newPubkey(),
-		receiver:           user,
-		receiverState:      st.TransferReceiverStatusKeyTweaked,
-		createTime:         f.baseNow.Add(-3 * time.Hour),    // oldest by t.create_time
-		receiverCreateTime: f.baseNow.Add(-70 * time.Minute), // newest by r.create_time
+		transferState: st.TransferStatusSenderKeyTweakPending,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		createTime:    f.baseNow.Add(-4 * time.Hour),
 	})
 
-	ids := f.getStuckTransferIDs(user, pb.Network_UNSPECIFIED, 50, 0)
-	assert.Equal(t, []uuid.UUID{newest.ID, middle.ID, oldest.ID}, ids,
-		"ordering must track transfers.create_time, not transfer_receivers.create_time")
-
-	// Pagination must also be stable under divergence.
-	page1 := f.getStuckTransferIDs(user, pb.Network_UNSPECIFIED, 2, 0)
-	page2 := f.getStuckTransferIDs(user, pb.Network_UNSPECIFIED, 2, 2)
+	page1 := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 2, 0)
+	page2 := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 2, 2)
 	assert.Equal(t, []uuid.UUID{newest.ID, middle.ID}, page1)
 	assert.Equal(t, []uuid.UUID{oldest.ID}, page2)
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_InitiatedNotStuck verifies that an
+// INITIATED receiver row never surfaces on the no-pubkey path. The new
+// idx_transferreceiver_stuck_create_time partial doesn't include INITIATED
+// in its WHERE clause, so this is structurally a tighter guarantee than the
+// with-pubkey case (whose partial covers INITIATED + 4 stuck and relies on
+// the query's status filter to exclude INITIATED).
+func TestGetStuckTransfers_MIMO_NoPubkey_InitiatedNotStuck(t *testing.T) {
+	f := newStuckFixture(t)
+
+	_ = f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusSenderKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusSenderInitiated, // == "INITIATED"
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Empty(t, ids, "INITIATED receivers must not appear in no-pubkey results")
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_BeforeCutoff exercises the
+// `r.create_time < cutoff` predicate on the no-pubkey path. The handler's
+// 1-hour default and a tighter explicit override must both be honored.
+func TestGetStuckTransfers_MIMO_NoPubkey_BeforeCutoff(t *testing.T) {
+	f := newStuckFixture(t)
+
+	old := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-3 * time.Hour),
+	})
+	recent := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-90 * time.Minute), // outside default 1h cutoff, inside 2h cutoff
+	})
+
+	// Default cutoff (now - 1h) picks up both.
+	resp, err := f.handler.GetStuckTransfers(f.ctx, &pbssp.GetStuckTransfersRequest{
+		Network: pb.Network_UNSPECIFIED,
+		Limit:   50,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Transfers, 2)
+
+	// Tighter cutoff (now - 2h) excludes the 90-minute-old row, leaving only the 3h-old.
+	resp, err = f.handler.GetStuckTransfers(f.ctx, &pbssp.GetStuckTransfersRequest{
+		Network: pb.Network_UNSPECIFIED,
+		Before:  timestamppb.New(f.baseNow.Add(-2 * time.Hour)),
+		Limit:   50,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Transfers, 1)
+	assert.Equal(t, old.ID.String(), resp.Transfers[0].Transfer.Id)
+	assert.NotEqual(t, recent.ID.String(), resp.Transfers[0].Transfer.Id)
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_OrderedByCreateTimeDesc verifies the
+// new partial drives ordered top-N natively (no Sort node above the index
+// scan). Ordering is by r.create_time, equivalent to t.create_time under the
+// cross-participant invariant.
+func TestGetStuckTransfers_MIMO_NoPubkey_OrderedByCreateTimeDesc(t *testing.T) {
+	f := newStuckFixture(t)
+
+	newest := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-70 * time.Minute),
+	})
+	middle := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-2 * time.Hour),
+	})
+	oldest := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-3 * time.Hour),
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Equal(t, []uuid.UUID{newest.ID, middle.ID, oldest.ID}, ids)
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_TieBreaker verifies the
+// (create_time DESC, transfer_id DESC) tiebreaker on the new partial.
+// Without the transfer_id DESC component, pagination would not be
+// deterministic across rows with equal create_time.
+func TestGetStuckTransfers_MIMO_NoPubkey_TieBreaker(t *testing.T) {
+	f := newStuckFixture(t)
+	tiedTime := f.baseNow.Add(-2 * time.Hour)
+
+	tA := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    tiedTime,
+	})
+	tB := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    tiedTime,
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	require.Len(t, ids, 2)
+
+	first, second := tA.ID, tB.ID
+	if tA.ID.String() < tB.ID.String() {
+		first, second = tB.ID, tA.ID
+	}
+	assert.Equal(t, []uuid.UUID{first, second}, ids,
+		"transfer_id DESC tiebreaker must return the higher UUID first")
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_BothArmsOrdering verifies that the
+// UNION ALL across sender and receiver arms produces a globally-ordered
+// stream by create_time, not arm-then-arm concatenation. The planner
+// achieves this via Merge Append over two pre-sorted children — if either
+// arm's ordering or the union-level alias broke, this test would catch it.
+func TestGetStuckTransfers_MIMO_NoPubkey_BothArmsOrdering(t *testing.T) {
+	f := newStuckFixture(t)
+
+	// Alternating arms by create_time: sender (newest), receiver (middle), sender (oldest).
+	newestSender := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusSenderInitiated,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		createTime:    f.baseNow.Add(-70 * time.Minute),
+	})
+	middleReceiver := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusReceiverKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusKeyTweaked,
+		createTime:    f.baseNow.Add(-2 * time.Hour),
+	})
+	oldestSender := f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusSenderKeyTweakPending,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		createTime:    f.baseNow.Add(-3 * time.Hour),
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Equal(t, []uuid.UUID{newestSender.ID, middleReceiver.ID, oldestSender.ID}, ids,
+		"union of sender and receiver arms must interleave by create_time, not concatenate by arm")
 }
