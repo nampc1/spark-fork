@@ -170,7 +170,7 @@ func (f *equivFixture) makeTransfer(opts makeTransferOpts) *ent.Transfer {
 		opts.createTime = f.baseNow.Add(-2 * time.Hour)
 	}
 	if opts.receiverStatus == "" {
-		opts.receiverStatus = st.TransferReceiverStatusSenderInitiated
+		opts.receiverStatus = st.TransferReceiverStatusInitiated
 	}
 
 	transfer, err := f.client.Transfer.Create().
@@ -316,7 +316,7 @@ func (f *equivFixture) setupEquivalenceData() {
 		// Expired — qualifies as pending in both paths.
 		f.makeTransfer(makeTransferOpts{
 			transferStatus: st0,
-			receiverStatus: st.TransferReceiverStatusSenderInitiated,
+			receiverStatus: st.TransferReceiverStatusInitiated,
 			sender:         f.sender,
 			receiver:       f.newPubkey(),
 			expiryTime:     f.baseNow.Add(-1 * time.Hour),
@@ -325,7 +325,7 @@ func (f *equivFixture) setupEquivalenceData() {
 		// Not yet expired — must be excluded by both paths.
 		f.makeTransfer(makeTransferOpts{
 			transferStatus: st0,
-			receiverStatus: st.TransferReceiverStatusSenderInitiated,
+			receiverStatus: st.TransferReceiverStatusInitiated,
 			sender:         f.sender,
 			receiver:       f.newPubkey(),
 			expiryTime:     f.baseNow.Add(24 * time.Hour),
@@ -338,7 +338,7 @@ func (f *equivFixture) setupEquivalenceData() {
 	// Used by the sender_or_receiver cases.
 	f.makeTransfer(makeTransferOpts{
 		transferStatus: st.TransferStatusSenderKeyTweakPending,
-		receiverStatus: st.TransferReceiverStatusSenderInitiated,
+		receiverStatus: st.TransferReceiverStatusInitiated,
 		sender:         f.both,
 		receiver:       f.newPubkey(),
 		expiryTime:     f.baseNow.Add(-1 * time.Hour),
@@ -863,7 +863,7 @@ func TestQueryPendingTransfers_Equivalence_PaginationCrossKnob_Sender(t *testing
 		}
 		f.makeTransfer(makeTransferOpts{
 			transferStatus: status,
-			receiverStatus: st.TransferReceiverStatusSenderInitiated,
+			receiverStatus: st.TransferReceiverStatusInitiated,
 			sender:         sender,
 			receiver:       f.newPubkey(),
 			expiryTime:     f.baseNow.Add(-1 * time.Hour),
@@ -901,7 +901,7 @@ func TestQueryPendingTransfers_Equivalence_PaginationCrossKnob_SR1_DeepOffset(t 
 		}
 		f.makeTransfer(makeTransferOpts{
 			transferStatus: status,
-			receiverStatus: st.TransferReceiverStatusSenderInitiated,
+			receiverStatus: st.TransferReceiverStatusInitiated,
 			sender:         sr,
 			receiver:       f.newPubkey(),
 			expiryTime:     f.baseNow.Add(-1 * time.Hour),
