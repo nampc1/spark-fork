@@ -255,6 +255,5 @@ func updateChainWithRawSQL(
 	if err != nil {
 		return fmt.Errorf("failed to update chain nodes: %w", err)
 	}
-	ent.MarkTxDirty(ctx)
 	return nil
 }
