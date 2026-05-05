@@ -293,6 +293,26 @@ func TestGetStuckTransfers_MIMO_InitiatedNotStuck(t *testing.T) {
 	assert.Empty(t, ids, "INITIATED receivers are waiting, not stuck")
 }
 
+// TestGetStuckTransfers_MIMO_ReceiverClaimPendingNotStuck codifies the
+// deliberate exclusion of RECEIVER_CLAIM_PENDING from mimoStuckReceiverStatuses.
+// Sender has finished its key-tweak handoff (transfer at SENDER_KEY_TWEAKED)
+// and the receiver is in the post-tweak/pre-claim window; they haven't started
+// claiming yet, so they aren't stuck — they just haven't polled.
+func TestGetStuckTransfers_MIMO_ReceiverClaimPendingNotStuck(t *testing.T) {
+	f := newStuckFixture(t)
+	user := f.newPubkey()
+
+	_ = f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusSenderKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      user,
+		receiverState: st.TransferReceiverStatusReceiverClaimPending,
+	})
+
+	ids := f.getStuckTransferIDs(user, pb.Network_UNSPECIFIED, 50, 0)
+	assert.Empty(t, ids, "RECEIVER_CLAIM_PENDING receivers haven't started claiming, not stuck")
+}
+
 // TestGetStuckTransfers_MIMO_MultiReceiver_PerReceiverSemantic codifies the
 // MIMO V1 design intent from the PR #6280 review: stuck is per-receiver.
 // Two users sharing a multi-receiver transfer see different results
@@ -723,6 +743,24 @@ func TestGetStuckTransfers_MIMO_NoPubkey_InitiatedNotStuck(t *testing.T) {
 
 	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
 	assert.Empty(t, ids, "INITIATED receivers must not appear in no-pubkey results")
+}
+
+// TestGetStuckTransfers_MIMO_NoPubkey_ReceiverClaimPendingNotStuck verifies
+// that a RECEIVER_CLAIM_PENDING receiver row never surfaces on the no-pubkey
+// path either. Same rationale as the INITIATED variant — the receiver hasn't
+// started claiming yet.
+func TestGetStuckTransfers_MIMO_NoPubkey_ReceiverClaimPendingNotStuck(t *testing.T) {
+	f := newStuckFixture(t)
+
+	_ = f.makeTransfer(transferOpts{
+		transferState: st.TransferStatusSenderKeyTweaked,
+		sender:        f.newPubkey(),
+		receiver:      f.newPubkey(),
+		receiverState: st.TransferReceiverStatusReceiverClaimPending,
+	})
+
+	ids := f.getAllStuckTransferIDs(pb.Network_UNSPECIFIED, 50, 0)
+	assert.Empty(t, ids, "RECEIVER_CLAIM_PENDING receivers must not appear in no-pubkey results")
 }
 
 // TestGetStuckTransfers_MIMO_NoPubkey_BeforeCutoff exercises the
