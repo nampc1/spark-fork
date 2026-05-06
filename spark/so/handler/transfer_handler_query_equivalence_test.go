@@ -46,7 +46,11 @@ import (
 //   - SR1: sender_or_receiver participant — the UNION ALL path
 //
 // Postgres-only: queryPendingTransfersMIMO uses raw SQL with pq.Array bindings
-// and ANY($N::text[])/NOW() — neither supported by SQLite.
+// and ANY($N::text[]) — not supported by SQLite.
+//
+// File also contains MIMO-only contract tests at the bottom (Now-binding,
+// args validation) — they share the equivFixture but bypass the public
+// handler boundary to pin contracts that aren't observable from there.
 
 // equivFixture sets up shared state for equivalence tests: a Postgres-backed
 // Ent client, an authenticated session for the queried wallet, the privacy
@@ -311,7 +315,8 @@ func (f *equivFixture) setupEquivalenceData() {
 	})
 
 	// sender: sender-pending transfers. Mix of expired (qualifies) and
-	// not-yet-expired (excluded). Both paths apply expiry_time < NOW().
+	// not-yet-expired (excluded). Both paths apply expiry_time < <now>
+	// where <now> is sampled in Go at request entry.
 	for i, st0 := range []st.TransferStatus{st.TransferStatusSenderKeyTweakPending, st.TransferStatusSenderInitiated} {
 		// Expired — qualifies as pending in both paths.
 		f.makeTransfer(makeTransferOpts{
@@ -1054,4 +1059,113 @@ func withLimitOffset(filter *pb.TransferFilter, limit, offset int64) *pb.Transfe
 	filter.Limit = limit
 	filter.Offset = offset
 	return filter
+}
+
+// -----------------------------------------------------------------------------
+// MIMO-only contract tests (below the public handler boundary).
+//
+// Pin the contract that the MIMO sender-pending expiry predicate filters on
+// args.now rather than Postgres NOW(). Calls the dispatch directly — at the
+// public handler boundary args.now is always time.Now(), so a deterministic
+// boundary case is invisible there. fixedNow sits an hour in the past so
+// wall-clock NOW() is far ahead of every fixture; if the SQL were still using
+// NOW(), the after-fixedNow transfer would also come back.
+// -----------------------------------------------------------------------------
+
+func TestQueryMIMOPendingTransferIDs_NowIsBoundParameter_S1(t *testing.T) {
+	f := newEquivFixture(t)
+	fixedNow := f.baseNow.Add(-1 * time.Hour)
+
+	sender := f.newPubkey()
+	f.privacyEnabled(sender)
+
+	expired := f.makeTransfer(makeTransferOpts{
+		transferStatus: st.TransferStatusSenderKeyTweakPending,
+		receiverStatus: st.TransferReceiverStatusInitiated,
+		sender:         sender,
+		receiver:       f.newPubkey(),
+		expiryTime:     fixedNow.Add(-1 * time.Millisecond),
+		createTime:     f.baseNow.Add(-50 * time.Minute),
+	})
+
+	f.makeTransfer(makeTransferOpts{
+		transferStatus: st.TransferStatusSenderKeyTweakPending,
+		receiverStatus: st.TransferReceiverStatusInitiated,
+		sender:         sender,
+		receiver:       f.newPubkey(),
+		expiryTime:     fixedNow.Add(1 * time.Millisecond),
+		createTime:     f.baseNow.Add(-51 * time.Minute),
+	})
+
+	ids, err := queryMIMOPendingTransferIDs(f.ctx, f.client, queryMIMOPendingArgs{
+		participant:  pendingParticipantRoleSender,
+		walletPubkey: sender,
+		network:      pb.Network_REGTEST,
+		order:        pb.Order_DESCENDING,
+		limit:        100,
+		offset:       0,
+		now:          fixedNow,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, ids, 1, "args.now not bound: after-fixedNow row leaked through")
+	assert.Equal(t, expired.ID, ids[0])
+}
+
+func TestQueryMIMOPendingTransferIDs_NowIsBoundParameter_SR1(t *testing.T) {
+	f := newEquivFixture(t)
+	fixedNow := f.baseNow.Add(-1 * time.Hour)
+
+	sender := f.newPubkey()
+	f.privacyEnabled(sender)
+
+	expired := f.makeTransfer(makeTransferOpts{
+		transferStatus: st.TransferStatusSenderKeyTweakPending,
+		receiverStatus: st.TransferReceiverStatusInitiated,
+		sender:         sender,
+		receiver:       f.newPubkey(),
+		expiryTime:     fixedNow.Add(-1 * time.Millisecond),
+		createTime:     f.baseNow.Add(-50 * time.Minute),
+	})
+	f.makeTransfer(makeTransferOpts{
+		transferStatus: st.TransferStatusSenderKeyTweakPending,
+		receiverStatus: st.TransferReceiverStatusInitiated,
+		sender:         sender,
+		receiver:       f.newPubkey(),
+		expiryTime:     fixedNow.Add(1 * time.Millisecond),
+		createTime:     f.baseNow.Add(-51 * time.Minute),
+	})
+
+	ids, err := queryMIMOPendingTransferIDs(f.ctx, f.client, queryMIMOPendingArgs{
+		participant:  pendingParticipantRoleSenderOrReceiver,
+		walletPubkey: sender,
+		network:      pb.Network_REGTEST,
+		order:        pb.Order_DESCENDING,
+		limit:        100,
+		offset:       0,
+		now:          fixedNow,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, ids, 1, "SR1 sender arm: args.now not bound")
+	assert.Equal(t, expired.ID, ids[0])
+}
+
+// Guard against the silent failure mode where a future caller omits args.now:
+// time.Time{} encodes as '0001-01-01' in Postgres and the sender-arm predicate
+// becomes unsatisfiable, returning zero rows with no error.
+func TestQueryMIMOPendingTransferIDs_RequiresNow(t *testing.T) {
+	f := newEquivFixture(t)
+
+	_, err := queryMIMOPendingTransferIDs(f.ctx, f.client, queryMIMOPendingArgs{
+		participant:  pendingParticipantRoleSender,
+		walletPubkey: f.newPubkey(),
+		network:      pb.Network_REGTEST,
+		order:        pb.Order_DESCENDING,
+		limit:        100,
+		offset:       0,
+		// now intentionally omitted
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "now")
 }
