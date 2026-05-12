@@ -1169,3 +1169,151 @@ func TestQueryMIMOPendingTransferIDs_RequiresNow(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "now")
 }
+
+// -----------------------------------------------------------------------------
+// QueryAllTransfers equivalence — legacy queryTransfers vs the specialized
+// queryOutgoingInFlight path. Load-bearing for the safety of the
+// KnobReadMIMODataModelOutgoingInFlight rollout: per-request randomness means
+// a single caller can land on either path; the paths must return the same
+// transfer IDs, ordering, and per-transfer projections.
+// -----------------------------------------------------------------------------
+
+func (f *equivFixture) ctxForOutgoingInFlight(viewer keys.Public, mimoKnob float64) context.Context {
+	ctx := authn.InjectSessionForTests(f.ctx, hex.EncodeToString(viewer.Serialize()), 9999999999)
+	return knobs.InjectKnobsService(ctx, knobs.NewFixedKnobs(map[string]float64{
+		knobs.KnobPrivacyEnabled:                    100,
+		knobs.KnobReadMIMODataModelOutgoingInFlight: mimoKnob,
+		knobs.KnobReadMIMODataModelQueryTransfers:   0,
+		knobs.KnobFilterSSPCounterSwapAsTransfer:    0,
+	}))
+}
+
+// runBothPathsAllTransfers invokes QueryAllTransfers twice with the same
+// filter — once with the outgoing-in-flight knob off (falls through to legacy
+// queryTransfers) and once with it on (routes to queryOutgoingInFlight when
+// the filter shape matches).
+func (f *equivFixture) runBothPathsAllTransfers(viewer keys.Public, filter *pb.TransferFilter) (legacyResp, mimoResp *pb.QueryTransfersResponse, legacyErr, mimoErr error) {
+	f.t.Helper()
+	ctxLegacy := f.ctxForOutgoingInFlight(viewer, 0)
+	legacyResp, legacyErr = f.handler.QueryAllTransfers(ctxLegacy, filter, false)
+
+	ctxMIMO := f.ctxForOutgoingInFlight(viewer, 100)
+	mimoResp, mimoErr = f.handler.QueryAllTransfers(ctxMIMO, filter, false)
+	return legacyResp, mimoResp, legacyErr, mimoErr
+}
+
+func withOutgoingInFlightStatuses(filter *pb.TransferFilter, statuses ...pb.TransferStatus) *pb.TransferFilter {
+	return &pb.TransferFilter{
+		Participant: filter.Participant,
+		Network:     filter.Network,
+		Statuses:    statuses,
+	}
+}
+
+func TestQueryAllTransfers_Equivalence_OutgoingInFlight(t *testing.T) {
+	if !sparktesting.PostgresTestsEnabled() {
+		t.Skip("equivalence tests require Postgres (raw SQL uses pq.Array + ANY)")
+	}
+	f := newEquivFixture(t)
+	f.setupEquivalenceData()
+
+	cases := []struct {
+		name   string
+		viewer keys.Public
+		filter *pb.TransferFilter
+	}{
+		// Sender + full 4-state — routes to queryOutgoingInFlight. Fixture's
+		// f.sender has 4 sender-pending transfers (2 expired + 2 not-yet-expired,
+		// 2 SENDER_INITIATED + 2 SENDER_KEY_TWEAK_PENDING). QueryAllTransfers
+		// doesn't filter expiry, so all 4 must match in both paths.
+		{
+			"sender_full_4state",
+			f.sender,
+			withOutgoingInFlightStatuses(senderFilter(f.sender),
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_INITIATED,
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR,
+				pb.TransferStatus_TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK,
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING,
+			),
+		},
+		// Sender + single status — subset of the 4-state set. Should route to
+		// queryOutgoingInFlight (subset matches the partial's WHERE) and return
+		// only the 2 SENDER_INITIATED transfers.
+		{
+			"sender_single_SENDER_INITIATED",
+			f.sender,
+			withOutgoingInFlightStatuses(senderFilter(f.sender),
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_INITIATED,
+			),
+		},
+		// Sender + 2-state subset — still inside the partial's WHERE; routes
+		// to queryOutgoingInFlight. Returns 4 (all SENDER_INITIATED +
+		// SENDER_KEY_TWEAK_PENDING).
+		{
+			"sender_2state_subset",
+			f.sender,
+			withOutgoingInFlightStatuses(senderFilter(f.sender),
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_INITIATED,
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING,
+			),
+		},
+		// Sender + status outside the partial (SENDER_KEY_TWEAKED) — should
+		// fall through to legacy. New handler is bypassed; equivalence still
+		// holds because both paths execute the same legacy code.
+		{
+			"sender_status_outside_partial_falls_through",
+			f.sender,
+			withOutgoingInFlightStatuses(senderFilter(f.sender),
+				pb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAKED,
+			),
+		},
+		// Receiver participant — falls through to legacy unconditionally.
+		{
+			"receiver_falls_through",
+			f.medium,
+			withOutgoingInFlightStatuses(receiverFilter(f.medium),
+				pb.TransferStatus_TRANSFER_STATUS_RECEIVER_KEY_TWEAKED,
+			),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			legacy, mimo, lerr, merr := f.runBothPathsAllTransfers(tc.viewer, tc.filter)
+			assertResultsEquivalent(t, tc.name, legacy, mimo, lerr, merr)
+		})
+	}
+}
+
+// Locks the HasReceiver(walletPubkey) branch in queryOutgoingInFlight: when a
+// sender-only filter request hits a transfer where the wallet is also a
+// receiver, both paths must marshal the receiver-scoped projection. A
+// multi-receiver self-transfer is the discriminator — without the branch,
+// MarshalProto would return all leaves while MarshalProtoForReceiver filters
+// to just the wallet's leaves.
+func TestQueryAllTransfers_Equivalence_OutgoingInFlight_SelfTransfer(t *testing.T) {
+	if !sparktesting.PostgresTestsEnabled() {
+		t.Skip("equivalence tests require Postgres (raw SQL uses pq.Array + ANY)")
+	}
+	f := newEquivFixture(t)
+
+	self := f.newPubkey()
+	other := f.newPubkey()
+	f.privacyEnabled(self)
+	f.makeTransfer(makeTransferOpts{
+		transferStatus: st.TransferStatusSenderInitiated,
+		receiverStatus: st.TransferReceiverStatusInitiated,
+		sender:         self,
+		receiver:       self,
+		extraReceivers: []extraReceiverEquiv{
+			{pubkey: other, status: st.TransferReceiverStatusInitiated},
+		},
+		expiryTime: f.baseNow.Add(-1 * time.Hour),
+		createTime: f.baseNow.Add(-30 * time.Minute),
+	})
+
+	filter := withOutgoingInFlightStatuses(senderFilter(self),
+		pb.TransferStatus_TRANSFER_STATUS_SENDER_INITIATED,
+	)
+	legacy, mimo, lerr, merr := f.runBothPathsAllTransfers(self, filter)
+	assertResultsEquivalent(t, "self_transfer_4state", legacy, mimo, lerr, merr)
+}
