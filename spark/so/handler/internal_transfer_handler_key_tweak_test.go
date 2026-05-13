@@ -15,6 +15,7 @@ import (
 	"github.com/lightsparkdev/spark/so/db"
 	"github.com/lightsparkdev/spark/so/ent"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
+	enttransferleaf "github.com/lightsparkdev/spark/so/ent/transferleaf"
 	sparktesting "github.com/lightsparkdev/spark/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -193,6 +194,92 @@ func TestCommitSenderKeyTweaks_RejectsNilProofValue(t *testing.T) {
 		})
 	})
 	require.ErrorContains(t, commitErr, "key tweak proof value is nil")
+}
+
+func TestValidateKeyTweakProofRejectsNilProofValue(t *testing.T) {
+	ctx, dbCtx := db.ConnectToTestPostgres(t)
+	cfg := sparktesting.TestConfig(t)
+	rng := rand.NewChaCha8([32]byte{123})
+	client := dbCtx.Client
+
+	senderPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	receiverPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	keysharePrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	publicSharePrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	signingKeyshare, err := client.SigningKeyshare.Create().
+		SetStatus(st.KeyshareStatusAvailable).
+		SetSecretShare(keysharePrivKey).
+		SetPublicShares(map[string]keys.Public{cfg.Identifier: publicSharePrivKey.Public()}).
+		SetPublicKey(keysharePrivKey.Public()).
+		SetMinSigners(2).
+		SetCoordinatorIndex(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	tree, err := client.Tree.Create().
+		SetStatus(st.TreeStatusAvailable).
+		SetNetwork(btcnetwork.Regtest).
+		SetOwnerIdentityPubkey(senderPrivKey.Public()).
+		SetBaseTxid(st.NewRandomTxIDForTesting(t)).
+		SetVout(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	leaf, err := client.TreeNode.Create().
+		SetStatus(st.TreeNodeStatusAvailable).
+		SetTree(tree).
+		SetNetwork(tree.Network).
+		SetSigningKeyshare(signingKeyshare).
+		SetValue(1000).
+		SetVerifyingPubkey(keys.MustGeneratePrivateKeyFromRand(rng).Public()).
+		SetOwnerIdentityPubkey(senderPrivKey.Public()).
+		SetOwnerSigningPubkey(keys.MustGeneratePrivateKeyFromRand(rng).Public()).
+		SetRawTx(createTestTxBytes(t, 5400)).
+		SetRawRefundTx(createTestTxBytes(t, 5401)).
+		SetVout(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	transfer, err := client.Transfer.Create().
+		SetNetwork(btcnetwork.Regtest).
+		SetStatus(st.TransferStatusReceiverKeyTweaked).
+		SetType(st.TransferTypeTransfer).
+		SetSenderIdentityPubkey(senderPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverPrivKey.Public()).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	secretShare, _ := createValidSecretShares(cfg, rng)
+	keyTweakBytes, err := proto.Marshal(&sparkProto.ClaimLeafKeyTweak{
+		LeafId:           leaf.ID.String(),
+		SecretShareTweak: secretShare,
+	})
+	require.NoError(t, err)
+	transferLeaf, err := client.TransferLeaf.Create().
+		SetTransfer(transfer).
+		SetLeaf(leaf).
+		SetPreviousRefundTx(createTestTxBytes(t, 5402)).
+		SetIntermediateRefundTx(createTestTxBytes(t, 5403)).
+		SetKeyTweak(keyTweakBytes).
+		Save(ctx)
+	require.NoError(t, err)
+
+	loadedTransferLeaf, err := client.TransferLeaf.Query().
+		Where(enttransferleaf.ID(transferLeaf.ID)).
+		WithLeaf().
+		Only(ctx)
+	require.NoError(t, err)
+
+	var validateErr error
+	require.NotPanics(t, func() {
+		validateErr = NewTransferHandler(cfg).ValidateKeyTweakProof(ctx, []*ent.TransferLeaf{loadedTransferLeaf}, map[string]*sparkProto.SecretProof{
+			leaf.ID.String(): nil,
+		})
+	})
+	require.ErrorContains(t, validateErr, "key tweak proof value is nil")
 }
 
 func TestDeliverSenderKeyTweak_MissingKeyTweakForLeaf(t *testing.T) {
