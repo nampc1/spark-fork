@@ -68,6 +68,7 @@ func (f *dualWriteFixture) makeTransferWithReceivers(receiverStatuses []st.Trans
 			SetTransferID(transfer.ID).
 			SetIdentityPubkey(f.newPubkey()).
 			SetStatus(s).
+			SetTransferType(transfer.Type).
 			Save(f.ctx)
 		require.NoError(f.t, err)
 		receivers = append(receivers, r)

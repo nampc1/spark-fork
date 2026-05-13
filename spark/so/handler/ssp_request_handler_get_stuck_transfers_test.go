@@ -124,6 +124,7 @@ func (f *stuckFixture) makeTransfer(opts transferOpts) *ent.Transfer {
 		SetTransferID(transfer.ID).
 		SetIdentityPubkey(opts.sender).
 		SetCreateTime(createTime).
+		SetTransferType(transfer.Type).
 		Save(f.ctx)
 	require.NoError(f.t, err)
 
@@ -132,6 +133,7 @@ func (f *stuckFixture) makeTransfer(opts transferOpts) *ent.Transfer {
 		SetIdentityPubkey(opts.receiver).
 		SetStatus(receiverState).
 		SetCreateTime(createTime).
+		SetTransferType(transfer.Type).
 		Save(f.ctx)
 	require.NoError(f.t, err)
 
@@ -141,6 +143,7 @@ func (f *stuckFixture) makeTransfer(opts transferOpts) *ent.Transfer {
 			SetIdentityPubkey(extra.pubkey).
 			SetStatus(extra.status).
 			SetCreateTime(createTime).
+			SetTransferType(transfer.Type).
 			Save(f.ctx)
 		require.NoError(f.t, err)
 	}

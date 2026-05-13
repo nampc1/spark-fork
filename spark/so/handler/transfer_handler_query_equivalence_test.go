@@ -193,6 +193,7 @@ func (f *equivFixture) makeTransfer(opts makeTransferOpts) *ent.Transfer {
 		SetTransferID(transfer.ID).
 		SetIdentityPubkey(opts.sender).
 		SetCreateTime(opts.createTime).
+		SetTransferType(transfer.Type).
 		Save(f.ctx)
 	require.NoError(f.t, err)
 
@@ -201,6 +202,7 @@ func (f *equivFixture) makeTransfer(opts makeTransferOpts) *ent.Transfer {
 		SetIdentityPubkey(opts.receiver).
 		SetStatus(opts.receiverStatus).
 		SetCreateTime(opts.createTime).
+		SetTransferType(transfer.Type).
 		Save(f.ctx)
 	require.NoError(f.t, err)
 
@@ -210,6 +212,7 @@ func (f *equivFixture) makeTransfer(opts makeTransferOpts) *ent.Transfer {
 			SetIdentityPubkey(extra.pubkey).
 			SetStatus(extra.status).
 			SetCreateTime(opts.createTime).
+			SetTransferType(transfer.Type).
 			Save(f.ctx)
 		require.NoError(f.t, err)
 	}
